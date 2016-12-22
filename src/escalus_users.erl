@@ -70,7 +70,7 @@
 -spec start(escalus:config()) -> any().
 start(Config) ->
     case auth_type(Config) of
-        {escalus_user_db, {module, M, Opts}} ->
+        {module, M, Opts} ->
             M:start(Opts);
         _ ->
             ok
@@ -79,7 +79,7 @@ start(Config) ->
 -spec stop(escalus:config()) -> any().
 stop(Config) ->
     case auth_type(Config) of
-        {escalus_user_db, {module, M, Opts}} ->
+        {module, M, Opts} ->
             M:stop(Opts);
         _ ->
             ok
@@ -88,9 +88,9 @@ stop(Config) ->
 -spec create_users(escalus:config(), [user_spec()]) -> escalus:config().
 create_users(Config, Users) ->
     case auth_type(Config) of
-        {escalus_user_db, xmpp} ->
+        xmpp ->
             create_users_via_xmpp(Config, Users);
-        {escalus_user_db, {module, M, _}} ->
+        {module, M, _} ->
             M:create_users(Config, Users)
     end.
 
@@ -103,9 +103,9 @@ create_users_via_xmpp(Config, Users) ->
 -spec delete_users(escalus:config(), [user_spec()]) -> escalus:config().
 delete_users(Config, Users) ->
     case auth_type(Config) of
-        {escalus_user_db, xmpp} ->
+        xmpp ->
             [delete_user(Config, User) || User <- Users];
-        {escalus_user_db, {module, M, _}} ->
+        {module, M, _} ->
             M:delete_users(Config, Users)
     end.
 
@@ -279,14 +279,15 @@ delete_user(Config, {_Name, UserSpec}) ->
 
 -spec auth_type([proplists:property()]) -> {escalus_user_db, {module, atom(), list()} | xmpp}.
 auth_type(Config) ->
-    Type = case {escalus_config:get_config(escalus_user_db, Config, undefined),
-                 try_check_mod_register(Config)} of
-               {{module, M, Args}, _} -> {module, M, Args};
-               {{module, M}, _} -> {module, M, []};
-               {_, false} -> {module, escalus_ejabberd, []};
-               {_, true} -> xmpp
-           end,
-    {escalus_user_db, Type}.
+    auth_type(escalus_config:get_config(escalus_user_db, Config, undefined), Config).
+
+auth_type({module, M, Args}, _Config) -> {module, M, Args};
+auth_type({module, M}, _Config) -> {module, M, []};
+auth_type(undefined, Config) ->
+    case try_check_mod_register(Config) of
+        {_, false} -> {module, escalus_ejabberd, []};
+        {_, true} -> xmpp
+    end.
 
 try_check_mod_register(Config) ->
     try is_mod_register_enabled(Config)
