@@ -27,7 +27,8 @@
 % Public API
 -export([start/1,
          add_client/2,
-         clean/1,
+         remove_client/2,
+         get_clients/1,
          stop/1]).
 
 -behaviour(gen_server).
@@ -55,10 +56,13 @@ start(Config) ->
     [{escalus_cleaner, Pid} | Config].
 
 add_client(Config, Client) ->
-    gen_server:cast(get_cleaner(Config), {add_client, Client}).
+    gen_server:call(get_cleaner(Config), {add_client, Client}).
 
-clean(Config) ->
-    gen_server:call(get_cleaner(Config), clean).
+remove_client(Config, Client) ->
+    gen_server:call(get_cleaner(Config), {remove_client, Client}).
+
+get_clients(Config) ->
+    gen_server:call(get_cleaner(Config), get_clients).
 
 stop(Config) ->
     gen_server:cast(get_cleaner(Config), stop).
@@ -70,12 +74,13 @@ stop(Config) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_call(clean, _From, #state{clients = Clients} = State) ->
-    lists:foreach(fun escalus_client:stop/1, Clients),
-    {reply, ok, State#state{clients = []}}.
+handle_call({add_client, Client}, _From, #state{clients = Clients} = State) ->
+    {reply, ok, State#state{clients = [Client | Clients]}};
+handle_call({remove_client, Client}, _From, #state{clients = Clients} = State) ->
+    {reply, ok, State#state{clients = Clients -- [Client]}};
+handle_call(get_clients, _From, #state{clients = Clients} = State) ->
+    {reply, Clients, State}.
 
-handle_cast({add_client, Pid}, #state{clients = Clients} = State) ->
-    {noreply, State#state{clients = [Pid | Clients]}};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 

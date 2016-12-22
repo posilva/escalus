@@ -22,7 +22,8 @@
          reset_parser/1,
          is_connected/1,
          wait_for_close/2,
-         kill/1]).
+         kill/1,
+         start_stream/2]).
 
 %% Behaviour helpers
 -export([maybe_forward_to_owner/4]).
@@ -190,6 +191,7 @@ is_connected(#client{module = Mod} = Client) ->
 
 -spec stop(client()) -> ok | already_stopped.
 stop(#client{module = Mod} = Client) ->
+    end_stream(Client),
     Mod:stop(Client).
 
 %% @doc Brutally kill the connection without terminating the XMPP stream.
@@ -257,3 +259,16 @@ default_connection_steps() ->
      session,
      maybe_stream_management,
      maybe_use_carbons].
+
+start_stream(#client{module = Mod} = Client, Props) ->
+    StreamStartReq = Mod:stream_start_req(Props),
+    ok = send(Client, StreamStartReq),
+    Timeout = proplists:get_value(wait_for_stream_timeout, Props, 1000),
+    StreamStartRep = get_stanza(Client, stream_start, Timeout),
+    Mod:assert_stream_start(StreamStartRep).
+
+end_stream(#client{module = Mod} = Client) ->
+    StreamEndReq = Mod:stream_end_req(),
+    ok = send(Client, StreamEndReq),
+    StreamEndRep = get_stanza(Client, stream_end, 5000),
+    Mod:assert_stream_end(StreamEndRep).

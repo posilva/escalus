@@ -23,7 +23,11 @@
          set_sm_h/2,
          set_filter_predicate/2,
          stop/1,
-         kill/1]).
+         kill/1,
+         stream_start_req/1,
+         stream_end_req/0,
+         assert_stream_start/1,
+         assert_stream_end/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -93,7 +97,7 @@ stop(#client{rcv_pid = Pid}) ->
 
 kill(#client{rcv_pid = Pid}) ->
     %% Use `kill_connection` to avoid confusion with exit reason `kill`.
-    gen_server:call(Pid, kill_connection).
+    catch gen_server:call(Pid, kill_connection).
 
 upgrade_to_tls(#client{socket = Socket, rcv_pid = Pid} = Client, Props) ->
     Starttls = escalus_stanza:starttls(),
@@ -222,8 +226,7 @@ handle_call(kill_connection, _, #state{socket = Socket } = S) ->
     gen_tcp:close(Socket),
     close_compression_streams(S#state.compress),
     {stop, normal, ok, S};
-handle_call(stop, _From, #state{} = S) ->
-    send_stream_end(S),
+handle_call(stop, _From, S) ->
     close_compression_streams(S#state.compress),
     wait_until_closed(S#state.socket),
     {stop, normal, ok, S}.
@@ -313,10 +316,6 @@ forward_to_owner(Stanzas0, #state{owner = Owner,
         Owner ! {stanza, transport(NewState), Stanza}
     end, StanzasNoRs),
 
-    case lists:keyfind(xmlstreamend, 1, StanzasNoRs) of
-        false -> ok;
-        _     -> gen_server:cast(self(), stop)
-    end,
     NewState#state{replies = StanzasNoRs}.
 
 store_reply(Stanzas, #state{replies = Replies} = S) ->
@@ -327,11 +326,6 @@ store_reply(Stanzas, #state{replies = Replies} = S) ->
 handle_recv(#state{replies = []} = S) ->
     {empty, S};
 handle_recv(#state{replies = [Reply | Replies]} = S) ->
-    case Reply of
-        #xmlstreamend{} ->
-            gen_server:cast(self(), stop);
-        _ -> ok
-    end,
     {Reply, S#state{replies = Replies}}.
 
 separate_ack_requests({false, H0, A}, Stanzas) ->
@@ -398,7 +392,7 @@ wait_until_closed(Socket) ->
         {tcp_closed, Socket} ->
             ok
     after ?WAIT_FOR_SOCKET_CLOSE_TIMEOUT ->
-            ok
+            error(tcp_close_timeout)
     end.
 
 -spec host_to_inet(tuple() | atom() | list() | binary())
@@ -415,6 +409,7 @@ close_compression_streams(false) ->
     ok;
 close_compression_streams({zlib, {Zin, Zout}}) ->
     try
+        zlib:deflate(Zout, <<>>, finish),
         ok = zlib:inflateEnd(Zin),
         ok = zlib:deflateEnd(Zout)
     catch
@@ -422,19 +417,6 @@ close_compression_streams({zlib, {Zin, Zout}}) ->
     after
         ok = zlib:close(Zin),
         ok = zlib:close(Zout)
-    end.
-
-send_stream_end(#state{socket = Socket, ssl = Ssl, compress = Compress}) ->
-    StreamEnd = escalus_stanza:stream_end(),
-    case {Ssl, Compress} of
-        {true, _} ->
-            ssl:send(Socket, exml:to_iolist(StreamEnd));
-        {false, {zlib, {_, Zout}}} ->
-            gen_tcp:send(Socket, zlib:deflate(Zout,
-                                              exml:to_iolist(StreamEnd),
-                                              finish));
-        {false, false} ->
-            gen_tcp:send(Socket, exml:to_iolist(StreamEnd))
     end.
 
 do_connect(IsSSLConnection, Address, Port, Args, SocketOpts, OnConnectFun) ->
@@ -455,3 +437,17 @@ maybe_ssl_connection(true, Address, Port, Opts, Args) ->
     ssl:connect(Address, Port, Opts ++ SSLOpts);
 maybe_ssl_connection(_, Address, Port, Opts, _) ->
     gen_tcp:connect(Address, Port, Opts).
+
+stream_start_req(Props) ->
+    {server, Server} = lists:keyfind(server, 1, Props),
+    NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
+    escalus_stanza:stream_start(Server, NS).
+
+stream_end_req() ->
+    escalus_stanza:stream_end().
+
+assert_stream_start(Rep = #xmlstreamstart{}) -> Rep;
+assert_stream_start(Rep) -> error("Not a valid stream start", [Rep]).
+
+assert_stream_end(Rep = #xmlstreamend{}) -> Rep;
+assert_stream_end(Rep) -> error("Not a valid stream end", [Rep]).

@@ -62,20 +62,7 @@
 
 -spec start_stream(client(), user_spec()) -> {user_spec(), features()}.
 start_stream(Conn, Props) ->
-    {server, Server} = lists:keyfind(server, 1, Props),
-    NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
-    Transport = proplists:get_value(transport, Props, escalus_tcp),
-    IsLegacy = proplists:get_value(wslegacy, Props, false),
-    StreamStartReq = case {Transport, IsLegacy} of
-                         {escalus_ws, false} -> escalus_stanza:ws_open(Server);
-                         _ -> escalus_stanza:stream_start(Server, NS)
-                     end,
-    ok = escalus_connection:send(Conn, StreamStartReq),
-    StreamStartRep = escalus_connection:get_stanza(Conn, wait_for_stream),
-    assert_stream_start(StreamStartRep, Transport, IsLegacy),
-    %% TODO: deprecate 2-tuple return value
-    %% To preserve the previous interface we still return a 2-tuple,
-    %% but it's guaranteed that the features will be empty.
+    StreamStartRep = escalus_connection:start_stream(Conn, Props),
     {maybe_store_stream_id(StreamStartRep, Props), []}.
 
 -spec starttls(client(), user_spec()) -> {client(), user_spec()}.

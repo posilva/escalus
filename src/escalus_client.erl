@@ -21,7 +21,8 @@
          start/3,
          send/2,
          send_and_wait/2,
-         stop/1,
+         stop/2,
+         kill_connection/2,
          kill/1,
          peek_stanzas/1, has_stanzas/1,
          wait_for_stanzas/2, wait_for_stanzas/3,
@@ -65,8 +66,13 @@ start_for(Config, Username, Resource) ->
     %% those two are equivalent now
     start(Config, Username, Resource).
 
-stop(Conn) ->
-    escalus_connection:stop(Conn).
+stop(Config, Client) ->
+    escalus_connection:stop(Client),
+    escalus_cleaner:remove_client(Config, Client).
+
+kill_connection(Config, Client) ->
+    escalus_connection:kill(Client),
+    escalus_cleaner:remove_client(Config, Client).
 
 kill(#client{module = escalus_tcp, rcv_pid = Pid}) ->
     erlang:exit(Pid, kill).
