@@ -22,6 +22,7 @@
          send/2,
          send_and_wait/2,
          stop/2,
+         wait_for_close/3,
          kill_connection/2,
          kill/1,
          peek_stanzas/1, has_stanzas/1,
@@ -52,9 +53,8 @@ start(Config, UserSpec, Resource) ->
     EventClient = escalus_event:new_client(Config, UserSpec, Resource),
     Options = escalus_users:get_options(Config, UserSpec, Resource, EventClient),
     case escalus_connection:start(Options) of
-        {ok, Conn, Props, _} ->
-            Jid = make_jid(Props),
-            Client = Conn#client{jid = Jid, event_client = EventClient},
+        {ok, Conn, _} ->
+            Client = Conn#client{event_client = EventClient},
             escalus_cleaner:add_client(Config, Client),
             {ok, Client};
         {error, Error} ->
@@ -72,6 +72,10 @@ stop(Config, Client) ->
 
 kill_connection(Config, Client) ->
     escalus_connection:kill(Client),
+    escalus_cleaner:remove_client(Config, Client).
+
+wait_for_close(Config, Client, Timeout) ->
+    true = escalus_connection:wait_for_close(Client, Timeout),
     escalus_cleaner:remove_client(Config, Client).
 
 kill(#client{module = escalus_tcp, rcv_pid = Pid}) ->
@@ -103,7 +107,7 @@ do_wait_for_stanzas(_Client, 0, _TimeoutMsg, Acc) ->
 do_wait_for_stanzas(#client{event_client=EventClient, jid=Jid, rcv_pid=Pid} = Client,
                     Count, TimeoutMsg, Acc) ->
     receive
-        {stanza, #client{rcv_pid = Pid}, Stanza} ->
+        {stanza, Pid, Stanza} ->
             escalus_event:pop_incoming_stanza(EventClient, Stanza),
             escalus_ct:log_stanza(Jid, in, Stanza),
             do_wait_for_stanzas(Client, Count - 1, TimeoutMsg, [Stanza|Acc]);

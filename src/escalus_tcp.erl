@@ -15,9 +15,8 @@
 -export([connect/1,
          send/2,
          is_connected/1,
-         upgrade_to_tls/2,
-         use_zlib/2,
-         get_transport/1,
+         upgrade_to_tls/1,
+         use_zlib/1,
          reset_parser/1,
          get_sm_h/1,
          set_sm_h/2,
@@ -25,9 +24,9 @@
          stop/1,
          kill/1,
          stream_start_req/1,
-         stream_end_req/0,
-         assert_stream_start/1,
-         assert_stream_end/1]).
+         stream_end_req/1,
+         assert_stream_start/2,
+         assert_stream_end/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -59,33 +58,31 @@
 %%% API
 %%%===================================================================
 
--spec connect([proplists:property()]) -> {ok, #client{}}.
+-spec connect([proplists:property()]) -> pid().
 connect(Args) ->
     {ok, Pid} = gen_server:start_link(?MODULE, [Args, self()], []),
-    Transport = gen_server:call(Pid, get_transport),
-    {ok, Transport}.
+    Pid.
 
-send(#client{rcv_pid = Pid} = Client, Elem) ->
-    gen_server:cast(Pid, {send, Client, Elem}).
+send(Pid, Elem) ->
+    gen_server:cast(Pid, {send, Elem}).
 
-is_connected(#client{rcv_pid = Pid}) ->
+is_connected(Pid) ->
     erlang:is_process_alive(Pid).
 
-reset_parser(#client{rcv_pid = Pid}) ->
+reset_parser(Pid) ->
     gen_server:cast(Pid, reset_parser).
 
-get_sm_h(#client{rcv_pid = Pid}) ->
+get_sm_h(Pid) ->
     gen_server:call(Pid, get_sm_h).
 
-set_sm_h(#client{rcv_pid = Pid}, H) ->
+set_sm_h(Pid, H) ->
     gen_server:call(Pid, {set_sm_h, H}).
 
--spec set_filter_predicate(escalus_connection:client(),
-                           escalus_connection:filter_pred()) -> ok.
-set_filter_predicate(#client{rcv_pid = Pid}, Pred) ->
+-spec set_filter_predicate(pid(), escalus_connection:filter_pred()) -> ok.
+set_filter_predicate(Pid, Pred) ->
     gen_server:call(Pid, {set_filter_pred, Pred}).
 
-stop(#client{rcv_pid = Pid}) ->
+stop(Pid) ->
     try
         gen_server:call(Pid, stop)
     catch
@@ -95,48 +92,40 @@ stop(#client{rcv_pid = Pid}) ->
             already_stopped
     end.
 
-kill(#client{rcv_pid = Pid}) ->
+kill(Pid) ->
     %% Use `kill_connection` to avoid confusion with exit reason `kill`.
     catch gen_server:call(Pid, kill_connection).
 
-upgrade_to_tls(#client{socket = Socket, rcv_pid = Pid} = Client, Props) ->
-    Starttls = escalus_stanza:starttls(),
-    gen_tcp:send(Socket, exml:to_iolist(Starttls)),
+upgrade_to_tls(Client = #client{rcv_pid = Pid, props = Props}) ->
+    send(Pid, escalus_stanza:starttls()),
     escalus_connection:get_stanza(Client, proceed),
     SSLOpts = proplists:get_value(ssl_opts, Props, []),
     case gen_server:call(Pid, {upgrade_to_tls, SSLOpts}) of
         {error, Error} ->
             error(Error);
         _ ->
-            Client2 = get_transport(Client),
-            {Props2, _} = escalus_session:start_stream(Client2, Props),
-            {Client2, Props2}
+            escalus_session:start_stream(Client)
     end.
 
-use_zlib(#client{rcv_pid = Pid} = Client, Props) ->
+use_zlib(Client = #client{rcv_pid = Pid}) ->
     escalus_connection:send(Client, escalus_stanza:compress(<<"zlib">>)),
     Compressed = escalus_connection:get_stanza(Client, compressed),
     escalus:assert(is_compressed, Compressed),
     gen_server:call(Pid, use_zlib),
-    Client1 = get_transport(Client),
-    {Props2, _} = escalus_session:start_stream(Client1, Props),
-    {Client1, Props2}.
-
-get_transport(#client{rcv_pid = Pid}) ->
-    gen_server:call(Pid, get_transport).
+    escalus_session:start_stream(Client).
 
 %%%===================================================================
 %%% Low level API
 %%%===================================================================
 
-get_active(#client{rcv_pid = Pid}) ->
+get_active(Pid) ->
     gen_server:call(Pid, get_active).
 
-set_active(#client{rcv_pid = Pid}, Active) ->
+set_active(Pid, Active) ->
     gen_server:call(Pid, {set_active, Active}).
 
--spec recv(#client{}) -> exml_stream:element() | empty.
-recv(#client{rcv_pid = Pid}) ->
+-spec recv(pid()) -> exml_stream:element() | empty.
+recv(Pid) ->
     gen_server:call(Pid, recv).
 
 %%%===================================================================
@@ -191,8 +180,6 @@ handle_call(get_sm_h, _From, #state{sm_state = {_, H, _}} = State) ->
 handle_call({set_sm_h, H}, _From, #state{sm_state = {A, _OldH, S}} = State) ->
     NewState = State#state{sm_state={A, H, S}},
     {reply, {ok, H}, NewState};
-handle_call(get_transport, _From, State) ->
-    {reply, transport(State), State};
 handle_call({upgrade_to_tls, SSLOpts}, _From, #state{socket = Socket} = State) ->
     SSLOpts1 = [{reuse_sessions, true}],
     SSLOpts2 = lists:keymerge(1, lists:keysort(1, SSLOpts),
@@ -231,9 +218,9 @@ handle_call(stop, _From, S) ->
     wait_until_closed(S#state.socket),
     {stop, normal, ok, S}.
 
--spec handle_cast({send, any(), any()}, any()) -> {noreply, any()}.
-handle_cast({send, #client{socket = Socket, ssl = Ssl, compress = Compress},
-             Elem}, #state{on_request = OnRequestFun} = State) ->
+-spec handle_cast({send, any()}, any()) -> {noreply, any()}.
+handle_cast({send, Elem}, #state{socket = Socket, ssl = Ssl, compress = Compress,
+                                 on_request = OnRequestFun} = State) ->
     Reply = case {Ssl, Compress} of
                 {true, {zlib, {_, Zout}}} ->
                     Deflated = zlib:deflate(Zout, exml:to_iolist(Elem), sync),
@@ -313,9 +300,13 @@ forward_to_owner(Stanzas0, #state{owner = Owner,
 
     lists:foreach(fun(Stanza) ->
         escalus_event:incoming_stanza(EventClient, Stanza),
-        Owner ! {stanza, transport(NewState), Stanza}
+        Owner ! {stanza, self(), Stanza}
     end, StanzasNoRs),
 
+    case lists:keyfind(xmlstreamend, 1, StanzasNoRs) of
+        false -> ok;
+        _     -> gen_server:cast(self(), stop)
+    end,
     NewState#state{replies = StanzasNoRs}.
 
 store_reply(Stanzas, #state{replies = Replies} = S) ->
@@ -326,6 +317,11 @@ store_reply(Stanzas, #state{replies = Replies} = S) ->
 handle_recv(#state{replies = []} = S) ->
     {empty, S};
 handle_recv(#state{replies = [Reply | Replies]} = S) ->
+    case Reply of
+        #xmlstreamend{} ->
+            gen_server:cast(self(), stop);
+        _ -> ok
+    end,
     {Reply, S#state{replies = Replies}}.
 
 separate_ack_requests({false, H0, A}, Stanzas) ->
@@ -375,17 +371,6 @@ raw_send(#state{socket=Socket}, Elem) ->
 
 common_terminate(_Reason, #state{parser = Parser}) ->
     exml_stream:free_parser(Parser).
-
-transport(#state{socket = Socket,
-                 ssl = Ssl,
-                 compress = Compress,
-                 event_client = EventClient}) ->
-    #client{module = ?MODULE,
-               rcv_pid = self(),
-               socket = Socket,
-               ssl = Ssl,
-               compress = Compress,
-               event_client = EventClient}.
 
 wait_until_closed(Socket) ->
     receive
@@ -443,11 +428,11 @@ stream_start_req(Props) ->
     NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
     escalus_stanza:stream_start(Server, NS).
 
-stream_end_req() ->
+stream_end_req(_) ->
     escalus_stanza:stream_end().
 
-assert_stream_start(Rep = #xmlstreamstart{}) -> Rep;
-assert_stream_start(Rep) -> error("Not a valid stream start", [Rep]).
+assert_stream_start(Rep = #xmlstreamstart{}, _) -> Rep;
+assert_stream_start(Rep, _) -> error("Not a valid stream start", [Rep]).
 
-assert_stream_end(Rep = #xmlstreamend{}) -> Rep;
-assert_stream_end(Rep) -> error("Not a valid stream end", [Rep]).
+assert_stream_end(Rep = #xmlstreamend{}, _) -> Rep;
+assert_stream_end(Rep, _) -> error("Not a valid stream end", [Rep]).
