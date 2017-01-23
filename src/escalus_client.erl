@@ -83,7 +83,7 @@ kill(#client{module = escalus_tcp, rcv_pid = Pid}) ->
 
 peek_stanzas(#client{rcv_pid = Pid}) ->
     {messages, Msgs} = process_info(self(), messages),
-    lists:flatmap(fun ({stanza, #client{rcv_pid = StanzaPid}, Stanza}) when Pid == StanzaPid ->
+    lists:flatmap(fun ({stanza, StanzaPid, Stanza}) when Pid == StanzaPid ->
                           [Stanza];
                       %% FIXME: stream error
                       (_) ->

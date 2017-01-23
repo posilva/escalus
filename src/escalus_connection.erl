@@ -45,6 +45,7 @@
 -export([connection_step/2]).
 
 -define(TIMEOUT, 1000).
+-define(DEFAULT_RESOURCE, <<"escalus-default-resource">>).
 
 %%%===================================================================
 %%% Behaviour callback
@@ -123,7 +124,7 @@ connection_step(Step, {Client, Features}) ->
         end
     catch
         Error ->
-            (Client#client.module):stop(Client),
+            kill(Client),
             throw({connection_step_failed, {Step, Client, Features}, Error})
     end.
 
@@ -133,8 +134,8 @@ prepare_step(Step) when is_atom(Step) ->
 %% Accept functions defined in other modules.
 prepare_step({Mod, Fun}) when is_atom(Mod), is_atom(Fun) ->
     {Mod, Fun};
-%% Accept funs of arity 3.
-prepare_step(Fun) when is_function(Fun, 3) ->
+%% Accept funs of arity 2.
+prepare_step(Fun) when is_function(Fun, 2) ->
     Fun.
 
 -spec connect(escalus_users:user_spec()) -> {ok, client(), escalus_users:user_spec()}.
@@ -144,13 +145,18 @@ connect(Props) ->
     Host = proplists:get_value(host, Props, Server),
     NewProps = lists:keystore(host, 1, Props, {host, Host}),
     Pid = Transport:connect(NewProps),
-    #client{jid = make_jid(Props), module = Transport, rcv_pid = Pid, props = NewProps}.
+    maybe_set_jid(#client{module = Transport, rcv_pid = Pid, props = NewProps}).
 
-make_jid(Proplist) ->
-    {username, U} = lists:keyfind(username, 1, Proplist),
-    {server, S} = lists:keyfind(server, 1, Proplist),
-    R = proplists:get_value(resource, Proplist, <<"res">>),
-    <<U/binary, "@", S/binary, "/", R/binary>>.
+maybe_set_jid(Client = #client{props = Props}) ->
+    case {lists:keyfind(username, 1, Props),
+          lists:keyfind(server, 1, Props),
+          lists:keyfind(resource, 1, Props)
+         } of
+        {{username, U}, {server, S}, {resource, R}} ->
+            Client#client{jid = <<U/binary, "@", S/binary, "/", R/binary>>};
+        _ ->
+            Client
+    end.
 
 -spec send(escalus:client(), exml:element()) -> ok.
 send(#client{module = Mod, event_client = EventClient, rcv_pid = Pid, jid = Jid}, Elem) ->

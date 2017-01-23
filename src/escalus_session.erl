@@ -167,8 +167,8 @@ maybe_use_ssl(Client = #client{props = Props}, Features) ->
     case use_ssl(Props, Features) of
         true ->
             Client1 = starttls(Client),
-            {Conn2, Props2, Features2} = stream_features(Client1, []),
-            {Conn2, Props2, Features2};
+            {Client2, Features2} = stream_features(Client1, []),
+            {Client2, Features2};
         false ->
             {Client, Features}
     end.

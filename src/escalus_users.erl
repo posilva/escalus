@@ -244,13 +244,13 @@ get_user_by_name(Name) ->
 -spec create_user(escalus:config(), named_user()) -> any().
 create_user(Config, {_Name, Options}) ->
     ClientProps0 = get_options(Config, Options),
-    {ok, Conn, ClientProps, _} = escalus_connection:start(ClientProps0,
+    {ok, Conn, _} = escalus_connection:start(ClientProps0,
                                                           [start_stream,
                                                            stream_features,
                                                            maybe_use_ssl]),
     escalus_connection:send(Conn, escalus_stanza:get_registration_fields()),
     {ok, result, RegisterInstrs} = wait_for_result(Conn),
-    Answers = get_answers(ClientProps, RegisterInstrs),
+    Answers = get_answers(Conn#client.props, RegisterInstrs),
     escalus_connection:send(Conn, escalus_stanza:register_account(Answers)),
     Result = wait_for_result(Conn),
     escalus_connection:stop(Conn),
@@ -271,7 +271,7 @@ verify_creation({error, Error, Raw}) ->
       {ok, _, _} | {error, _, _}.
 delete_user(Config, {_Name, UserSpec}) ->
     Options = get_options(Config, UserSpec),
-    {ok, Conn, _, _} = escalus_connection:start(Options),
+    {ok, Conn, _} = escalus_connection:start(Options),
     escalus_connection:send(Conn, escalus_stanza:remove_account()),
     Result = wait_for_result(Conn),
     escalus_connection:stop(Conn),
@@ -384,9 +384,9 @@ get_defined_option(Config, Name, Short, Long) ->
                                          | {ok, conflict, exml:element()}
                                          | {error, Error, exml:cdata()}
       when Error :: 'failed_to_register' | 'bad_response' | 'timeout'.
-wait_for_result(Conn) ->
+wait_for_result(#client{rcv_pid = Pid}) ->
     receive
-        {stanza, Conn, Stanza} ->
+        {stanza, Pid, Stanza} ->
             case response_type(Stanza) of
                 result ->
                     {ok, result, Stanza};
