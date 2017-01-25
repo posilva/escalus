@@ -152,6 +152,8 @@ maybe_set_jid(Client = #client{props = Props}) ->
           lists:keyfind(server, 1, Props),
           lists:keyfind(resource, 1, Props)
          } of
+        {{username, U}, {server, S}, false} ->
+            Client#client{jid = <<U/binary, "@", S/binary>>};
         {{username, U}, {server, S}, {resource, R}} ->
             Client#client{jid = <<U/binary, "@", S/binary, "/", R/binary>>};
         _ ->
