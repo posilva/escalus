@@ -20,6 +20,8 @@
          reset_parser/1,
          get_sm_h/1,
          set_sm_h/2,
+         is_using_compression/1,
+         is_using_ssl/1,
          set_filter_predicate/2,
          stop/1,
          kill/1,
@@ -77,6 +79,12 @@ get_sm_h(Pid) ->
 
 set_sm_h(Pid, H) ->
     gen_server:call(Pid, {set_sm_h, H}).
+
+is_using_compression(Pid) ->
+    gen_server:call(Pid, get_compress) =/= false.
+
+is_using_ssl(Pid) ->
+    gen_server:call(Pid, get_ssl).
 
 -spec set_filter_predicate(pid(), escalus_connection:filter_pred()) -> ok.
 set_filter_predicate(Pid, Pred) ->
@@ -202,6 +210,10 @@ handle_call(use_zlib, _, #state{parser = Parser, socket = Socket} = State) ->
                                 compress = {zlib, {Zin,Zout}}}};
 handle_call(get_active, _From, #state{active = Active} = State) ->
     {reply, Active, State};
+handle_call(get_compress, _From, #state{compress = Compress} = State) ->
+    {reply, Compress, State};
+handle_call(get_ssl, _From, #state{ssl = Ssl} = State) ->
+    {reply, Ssl, State};
 handle_call({set_active, Active}, _From, State) ->
     {reply, ok, State#state{active = Active}};
 handle_call({set_filter_pred, Pred}, _From, State) ->
