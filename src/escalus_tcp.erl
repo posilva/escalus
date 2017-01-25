@@ -209,8 +209,11 @@ handle_call({set_filter_pred, Pred}, _From, State) ->
 handle_call(recv, _From, State) ->
     {Reply, NS} = handle_recv(State),
     {reply, Reply, NS};
-handle_call(kill_connection, _, #state{socket = Socket } = S) ->
-    gen_tcp:close(Socket),
+handle_call(kill_connection, _, #state{socket = Socket, ssl = SSL} = S) ->
+    case SSL of
+        true -> ssl:close(Socket);
+        false -> gen_tcp:close(Socket)
+    end,
     close_compression_streams(S#state.compress),
     {stop, normal, ok, S};
 handle_call(stop, _From, S) ->

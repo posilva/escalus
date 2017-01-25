@@ -204,8 +204,8 @@ set_sm_h(#client{module = Mod}, _) ->
     error({set_sm_h, {undefined_for_escalus_module, Mod}}).
 
 -spec set_filter_predicate(client(), filter_pred()) -> ok.
-set_filter_predicate(#client{module = Module} = Conn, Pred) ->
-    Module:set_filter_predicate(Conn, Pred).
+set_filter_predicate(#client{module = Module, rcv_pid = Pid}, Pred) ->
+    Module:set_filter_predicate(Pid, Pred).
 
 -spec reset_parser(client()) -> ok.
 reset_parser(#client{module = Mod, rcv_pid = Pid}) ->

@@ -283,10 +283,10 @@ auth_type(Config) ->
 
 auth_type({module, M, Args}, _Config) -> {module, M, Args};
 auth_type({module, M}, _Config) -> {module, M, []};
-auth_type(undefined, Config) ->
+auth_type(_, Config) ->
     case try_check_mod_register(Config) of
-        {_, false} -> {module, escalus_ejabberd, []};
-        {_, true} -> xmpp
+        false -> {module, escalus_ejabberd, []};
+        true -> xmpp
     end.
 
 try_check_mod_register(Config) ->
@@ -300,7 +300,7 @@ is_mod_register_enabled(Config) ->
     Host = escalus_config:get_config(escalus_host, Config, Server),
     Port = escalus_config:get_config(escalus_port, Config, 5222),
     ClientProps = [{server, Server}, {host, Host}, {port, Port}],
-    {ok, Conn, _, _} = escalus_connection:start(ClientProps,
+    {ok, Conn, _} = escalus_connection:start(ClientProps,
                                                 [start_stream,
                                                  stream_features,
                                                  maybe_use_ssl]),
