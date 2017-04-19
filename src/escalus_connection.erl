@@ -5,6 +5,7 @@
 %%%===================================================================
 -module(escalus_connection).
 
+-include_lib("exml/include/exml_stream.hrl").
 -include("escalus.hrl").
 
 %% High-level API
@@ -22,7 +23,8 @@
          reset_parser/1,
          is_connected/1,
          wait_for_close/2,
-         kill/1]).
+         kill/1,
+         start_stream/1]).
 
 %% Behaviour helpers
 -export([maybe_forward_to_owner/4]).
@@ -43,6 +45,7 @@
 -export([connection_step/2]).
 
 -define(TIMEOUT, 1000).
+-define(DEFAULT_RESOURCE, <<"escalus-default-resource">>).
 
 %%%===================================================================
 %%% Behaviour callback
@@ -98,31 +101,31 @@ start(Props) ->
 -spec start(escalus_users:user_spec(),
             [step_spec()]) -> {ok, client(), escalus_users:user_spec()} |
                               {error, any()}.
-start(Props0, Steps) ->
+start(Props, Steps) ->
     try
-        {ok, Conn, Props} = connect(Props0),
-        {Conn1, Props1, Features} = lists:foldl(fun connection_step/2,
-                                                {Conn, Props, []},
+        Client = connect(Props),
+        {Client1, Features} = lists:foldl(fun connection_step/2,
+                                                {Client, []},
                                                 [prepare_step(Step)
                                                  || Step <- Steps]),
-        {ok, Conn1, Props1, Features}
+        {ok, Client1, Features}
     catch
         throw:{connection_step_failed, _Details, _Reason} = Error ->
             {error, Error}
     end.
 
-connection_step(Step, {Conn, Props, Features}) ->
+connection_step(Step, {Client, Features}) ->
     try
         case Step of
             {Mod, Fun} ->
-                apply(Mod, Fun, [Conn, Props, Features]);
+                apply(Mod, Fun, [Client, Features]);
             Fun ->
-                apply(Fun, [Conn, Props, Features])
+                apply(Fun, [Client, Features])
         end
     catch
         Error ->
-            (Conn#client.module):stop(Conn),
-            throw({connection_step_failed, {Step, Conn, Props, Features}, Error})
+            kill(Client),
+            throw({connection_step_failed, {Step, Client, Features}, Error})
     end.
 
 %% By default use predefined connection steps from escalus_session.
@@ -131,8 +134,8 @@ prepare_step(Step) when is_atom(Step) ->
 %% Accept functions defined in other modules.
 prepare_step({Mod, Fun}) when is_atom(Mod), is_atom(Fun) ->
     {Mod, Fun};
-%% Accept funs of arity 3.
-prepare_step(Fun) when is_function(Fun, 3) ->
+%% Accept funs of arity 2.
+prepare_step(Fun) when is_function(Fun, 2) ->
     Fun.
 
 -spec connect(escalus_users:user_spec()) -> {ok, client(), escalus_users:user_spec()}.
@@ -141,14 +144,27 @@ connect(Props) ->
     Server = proplists:get_value(server, Props, <<"localhost">>),
     Host = proplists:get_value(host, Props, Server),
     NewProps = lists:keystore(host, 1, Props, {host, Host}),
-    {ok, Conn} = Transport:connect(NewProps),
-    {ok, Conn, NewProps}.
+    Pid = Transport:connect(NewProps),
+    maybe_set_jid(#client{module = Transport, rcv_pid = Pid, props = NewProps}).
+
+maybe_set_jid(Client = #client{props = Props}) ->
+    case {lists:keyfind(username, 1, Props),
+          lists:keyfind(server, 1, Props),
+          lists:keyfind(resource, 1, Props)
+         } of
+        {{username, U}, {server, S}, false} ->
+            Client#client{jid = <<U/binary, "@", S/binary>>};
+        {{username, U}, {server, S}, {resource, R}} ->
+            Client#client{jid = <<U/binary, "@", S/binary, "/", R/binary>>};
+        _ ->
+            Client
+    end.
 
 -spec send(escalus:client(), exml:element()) -> ok.
-send(#client{module = Mod, event_client = EventClient, jid = Jid} = Client, Elem) ->
+send(#client{module = Mod, event_client = EventClient, rcv_pid = Pid, jid = Jid}, Elem) ->
     escalus_event:outgoing_stanza(EventClient, Elem),
     escalus_ct:log_stanza(Jid, out, Elem),
-    Mod:send(Client, Elem).
+    Mod:send(Pid, Elem).
 
 -spec get_stanza(client(), any()) -> exml_stream:element().
 get_stanza(Conn, Name) ->
@@ -157,45 +173,59 @@ get_stanza(Conn, Name) ->
 -spec get_stanza(client(), any(), timeout()) -> exml_stream:element().
 get_stanza(#client{rcv_pid = Pid, jid = Jid}, Name, Timeout) ->
     receive
-        {stanza, #client{rcv_pid = Pid}, Stanza} ->
+        {stanza, Pid, Stanza} ->
             escalus_ct:log_stanza(Jid, in, Stanza),
             Stanza
     after Timeout ->
             throw({timeout, Name})
     end.
 
+get_stream_end(#client{rcv_pid = Pid, jid = Jid}, Timeout) ->
+    receive
+        {stanza, Pid, Stanza = #xmlel{name = <<"close">>}} ->
+            escalus_ct:log_stanza(Jid, in, Stanza),
+            Stanza;
+        {stanza, Pid, Stanza = #xmlstreamend{}} ->
+            escalus_ct:log_stanza(Jid, in, Stanza),
+            Stanza
+    after Timeout ->
+            throw({timeout, stream_end})
+    end.
+
+
 -spec get_sm_h(#client{}) -> non_neg_integer().
-get_sm_h(#client{module = escalus_tcp} = Conn) ->
-    escalus_tcp:get_sm_h(Conn);
+get_sm_h(#client{module = escalus_tcp, rcv_pid = Pid}) ->
+    escalus_tcp:get_sm_h(Pid);
 get_sm_h(#client{module = Mod}) ->
     error({get_sm_h, {undefined_for_escalus_module, Mod}}).
 
 -spec set_sm_h(#client{}, non_neg_integer()) -> non_neg_integer().
-set_sm_h(#client{module = escalus_tcp} = Conn, H) ->
-    escalus_tcp:set_sm_h(Conn, H);
+set_sm_h(#client{module = escalus_tcp, rcv_pid = Pid}, H) ->
+    escalus_tcp:set_sm_h(Pid, H);
 set_sm_h(#client{module = Mod}, _) ->
     error({set_sm_h, {undefined_for_escalus_module, Mod}}).
 
 -spec set_filter_predicate(client(), filter_pred()) -> ok.
-set_filter_predicate(#client{module = Module} = Conn, Pred) ->
-    Module:set_filter_predicate(Conn, Pred).
+set_filter_predicate(#client{module = Module, rcv_pid = Pid}, Pred) ->
+    Module:set_filter_predicate(Pid, Pred).
 
 -spec reset_parser(client()) -> ok.
-reset_parser(#client{module = Mod} = Client) ->
-    Mod:reset_parser(Client).
+reset_parser(#client{module = Mod, rcv_pid = Pid}) ->
+    Mod:reset_parser(Pid).
 
 -spec is_connected(client()) -> boolean().
-is_connected(#client{module = Mod} = Client) ->
-    Mod:is_connected(Client).
+is_connected(#client{module = Mod, rcv_pid = Pid}) ->
+    Mod:is_connected(Pid).
 
 -spec stop(client()) -> ok | already_stopped.
-stop(#client{module = Mod} = Client) ->
-    Mod:stop(Client).
+stop(#client{module = Mod, rcv_pid = Pid} = Client) ->
+    end_stream(Client),
+    Mod:stop(Pid).
 
 %% @doc Brutally kill the connection without terminating the XMPP stream.
 -spec kill(client()) -> any().
-kill(#client{module = Mod} = Client) ->
-    Mod:kill(Client).
+kill(#client{module = Mod, rcv_pid = Pid}) ->
+    Mod:kill(Pid).
 
 %% @doc Waits at most MaxWait ms for the client to be closed.
 %% Returns true if the client was disconnected, otherwise false.
@@ -257,3 +287,17 @@ default_connection_steps() ->
      session,
      maybe_stream_management,
      maybe_use_carbons].
+
+start_stream(#client{module = Mod, props = Props} = Client) ->
+    StreamStartReq = Mod:stream_start_req(Props),
+    send(Client, StreamStartReq),
+    Timeout = proplists:get_value(wait_for_stream_timeout, Props, 1000),
+    StreamStartRep = get_stanza(Client, stream_start, Timeout),
+    Mod:assert_stream_start(StreamStartRep, Props).
+
+end_stream(#client{module = Mod, props = Props} = Client) ->
+    StreamEndReq = Mod:stream_end_req(Props),
+    send(Client, StreamEndReq),
+    Timeout = proplists:get_value(wait_for_stream_end_timeout, Props, 5000),
+    StreamEndRep = get_stream_end(Client, Timeout),
+    Mod:assert_stream_end(StreamEndRep, Props).
