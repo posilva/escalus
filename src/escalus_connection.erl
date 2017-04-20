@@ -62,7 +62,7 @@
 
 -callback is_connected(pid()) -> boolean().
 -callback reset_parser(pid()) -> ok.
--callback kill(client()) -> any().
+-callback kill(pid()) -> any().
 -callback set_filter_predicate(pid(), filter_pred()) -> ok.
 
 
