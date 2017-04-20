@@ -57,7 +57,7 @@
 %%% Public API
 %%%===================================================================
 
--spec start_stream(client()) -> {client(), features()}.
+-spec start_stream(client()) -> client().
 start_stream(Client = #client{props = Props}) ->
     StreamStartRep = escalus_connection:start_stream(Client),
     Client#client{props = maybe_store_stream_id(StreamStartRep, Props)}.
@@ -252,22 +252,6 @@ session(Client, Features) ->
 %%%===================================================================
 %%% Helpers
 %%%===================================================================
-
-assert_stream_start(StreamStartRep, Transport, IsLegacy) ->
-    case {StreamStartRep, Transport, IsLegacy} of
-        {#xmlel{name = <<"open">>}, escalus_ws, false} ->
-            ok;
-        {#xmlel{name = <<"open">>}, escalus_ws, true} ->
-            error("<open/> with legacy WebSocket",
-                  [StreamStartRep]);
-        {#xmlstreamstart{}, escalus_ws, false} ->
-            error("<stream:stream> with non-legacy WebSocket",
-                  [StreamStartRep]);
-        {#xmlstreamstart{}, _, _} ->
-            ok;
-        _ ->
-            error("Not a valid stream start", [StreamStartRep])
-    end.
 
 assert_stream_features(StreamFeatures, Transport, IsLegacy) ->
     case {StreamFeatures, Transport, IsLegacy} of

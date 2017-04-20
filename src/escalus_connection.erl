@@ -56,14 +56,14 @@
 %% This is purely informal, for Dialyzer it's just a module().
 -type t() :: module().
 
--callback connect([proplists:property()]) -> {ok, client()}.
--callback send(client(), exml:element()) -> ok.
--callback stop(client()) -> ok | already_stopped.
+-callback connect([proplists:property()]) -> pid().
+-callback send(pid(), exml:element()) -> ok.
+-callback stop(pid()) -> ok | already_stopped.
 
--callback is_connected(client()) -> boolean().
--callback reset_parser(client()) -> ok.
+-callback is_connected(pid()) -> boolean().
+-callback reset_parser(pid()) -> ok.
 -callback kill(client()) -> any().
--callback set_filter_predicate(client(), filter_pred()) -> ok.
+-callback set_filter_predicate(pid(), filter_pred()) -> ok.
 
 
 %%%===================================================================
@@ -138,7 +138,7 @@ prepare_step({Mod, Fun}) when is_atom(Mod), is_atom(Fun) ->
 prepare_step(Fun) when is_function(Fun, 2) ->
     Fun.
 
--spec connect(escalus_users:user_spec()) -> {ok, client(), escalus_users:user_spec()}.
+-spec connect(escalus_users:user_spec()) -> client().
 connect(Props) ->
     Transport = proplists:get_value(transport, Props, escalus_tcp),
     Server = proplists:get_value(server, Props, <<"localhost">>),
@@ -150,8 +150,7 @@ connect(Props) ->
 maybe_set_jid(Client = #client{props = Props}) ->
     case {lists:keyfind(username, 1, Props),
           lists:keyfind(server, 1, Props),
-          lists:keyfind(resource, 1, Props)
-         } of
+          lists:keyfind(resource, 1, Props)} of
         {{username, U}, {server, S}, false} ->
             Client#client{jid = <<U/binary, "@", S/binary>>};
         {{username, U}, {server, S}, {resource, R}} ->

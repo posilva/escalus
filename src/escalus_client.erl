@@ -158,13 +158,3 @@ server(Client) ->
 -spec resource(client()) -> binary().
 resource(Client) ->
     escalus_utils:get_resource(full_jid(Client)).
-
-%%--------------------------------------------------------------------
-%% helpers
-%%--------------------------------------------------------------------
-
-make_jid(Proplist) ->
-    {username, U} = lists:keyfind(username, 1, Proplist),
-    {server, S} = lists:keyfind(server, 1, Proplist),
-    {resource, R} = lists:keyfind(resource, 1, Proplist),
-    <<U/binary, "@", S/binary, "/", R/binary>>.

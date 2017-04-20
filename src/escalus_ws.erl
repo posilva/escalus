@@ -73,8 +73,7 @@ kill(Pid) ->
     %% Use `kill_connection` to avoid confusion with exit reason `kill`.
     catch gen_server:call(Pid, kill_connection).
 
--spec set_filter_predicate(escalus_connection:client(),
-    escalus_connection:filter_pred()) -> ok.
+-spec set_filter_predicate(pid(), escalus_connection:filter_pred()) -> ok.
 set_filter_predicate(Pid, Pred) ->
     gen_server:call(Pid, {set_filter_pred, Pred}).
 

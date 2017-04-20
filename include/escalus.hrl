@@ -25,5 +25,5 @@
         module :: atom(),
         rcv_pid :: pid(),
         event_client :: any(),
-        props = #{} :: map()
+        props :: list()
        }).
