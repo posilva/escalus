@@ -15,7 +15,7 @@
 -export([connect/1,
          send/2,
          is_connected/1,
-         upgrade_to_tls/1,
+         upgrade_to_tls/2,
          use_zlib/1,
          reset_parser/1,
          get_sm_h/1,
@@ -56,6 +56,8 @@
 -define(SERVER, ?MODULE).
 -include("escalus_tcp.hrl").
 
+-type state() :: #state{}.
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -65,24 +67,31 @@ connect(Args) ->
     {ok, Pid} = gen_server:start_link(?MODULE, [Args, self()], []),
     Pid.
 
+-spec send(pid(), exml:element()) -> ok.
 send(Pid, Elem) ->
     gen_server:cast(Pid, {send, Elem}).
 
+-spec is_connected(pid()) -> boolean().
 is_connected(Pid) ->
     erlang:is_process_alive(Pid).
 
+-spec reset_parser(pid()) -> ok.
 reset_parser(Pid) ->
     gen_server:cast(Pid, reset_parser).
 
+-spec get_sm_h(pid()) -> non_neg_integer().
 get_sm_h(Pid) ->
     gen_server:call(Pid, get_sm_h).
 
+-spec set_sm_h(pid(), non_neg_integer()) -> {ok, non_neg_integer()}.
 set_sm_h(Pid, H) ->
     gen_server:call(Pid, {set_sm_h, H}).
 
+-spec is_using_compression(pid()) -> boolean().
 is_using_compression(Pid) ->
     gen_server:call(Pid, get_compress) =/= false.
 
+-spec is_using_ssl(pid()) -> boolean().
 is_using_ssl(Pid) ->
     gen_server:call(Pid, get_ssl).
 
@@ -90,6 +99,7 @@ is_using_ssl(Pid) ->
 set_filter_predicate(Pid, Pred) ->
     gen_server:call(Pid, {set_filter_pred, Pred}).
 
+-spec stop(pid()) -> ok | already_stopped.
 stop(Pid) ->
     try
         gen_server:call(Pid, stop)
@@ -100,35 +110,61 @@ stop(Pid) ->
             already_stopped
     end.
 
+-spec kill(pid()) -> ok | already_stopped.
 kill(Pid) ->
     %% Use `kill_connection` to avoid confusion with exit reason `kill`.
-    catch gen_server:call(Pid, kill_connection).
+    try
+        gen_server:call(Pid, kill_connection)
+    catch
+        exit:{noproc, {gen_server, call, _}} ->
+            already_stopped;
+        exit:{normal, {gen_server, call, _}} ->
+            already_stopped
+    end.
 
-upgrade_to_tls(Client = #client{rcv_pid = Pid, props = Props}) ->
-    send(Pid, escalus_stanza:starttls()),
-    escalus_connection:get_stanza(Client, proceed),
-    SSLOpts = proplists:get_value(ssl_opts, Props, []),
+%% TODO get rid of the functions using #client
+
+-spec upgrade_to_tls(pid(), proplists:proplist()) -> ok.
+upgrade_to_tls(Pid, SSLOpts) ->
     case gen_server:call(Pid, {upgrade_to_tls, SSLOpts}) of
         {error, Error} ->
             error(Error);
         _ ->
-            escalus_session:start_stream(Client)
+            ok
     end.
 
-use_zlib(Client = #client{rcv_pid = Pid}) ->
-    escalus_connection:send(Client, escalus_stanza:compress(<<"zlib">>)),
-    Compressed = escalus_connection:get_stanza(Client, compressed),
-    escalus:assert(is_compressed, Compressed),
-    gen_server:call(Pid, use_zlib),
-    escalus_session:start_stream(Client).
+-spec use_zlib(pid()) -> ok.
+use_zlib(Pid) ->
+    gen_server:call(Pid, use_zlib).
+
+-spec stream_start_req(escalus_users:user_spec()) -> exml_stream:element().
+stream_start_req(Props) ->
+    {server, Server} = lists:keyfind(server, 1, Props),
+    NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
+    escalus_stanza:stream_start(Server, NS).
+
+-spec stream_end_req(_) -> exml_stream:element().
+stream_end_req(_) ->
+    escalus_stanza:stream_end().
+
+-spec assert_stream_start(exml_stream:element(), _) -> exml_stream:element().
+assert_stream_start(Rep = #xmlstreamstart{}, _) -> Rep;
+assert_stream_start(Rep, _) -> error("Not a valid stream start", [Rep]).
+
+-spec assert_stream_end(exml_stream:element(), _) -> exml_stream:element().
+assert_stream_end(Rep = #xmlstreamend{}, _) -> Rep;
+assert_stream_end(Rep, _) -> error("Not a valid stream end", [Rep]).
+
 
 %%%===================================================================
 %%% Low level API
 %%%===================================================================
 
+-spec get_active(pid()) -> boolean().
 get_active(Pid) ->
     gen_server:call(Pid, get_active).
 
+-spec set_active(pid(), boolean()) -> ok.
 set_active(Pid, Active) ->
     gen_server:call(Pid, {set_active, Active}).
 
@@ -142,6 +178,7 @@ recv(Pid) ->
 
 %% TODO: refactor all opt defaults taken from Args into a default_opts function,
 %%       so that we know what options the module actually expects
+-spec init(list()) -> {ok, state()}.
 init([Args, Owner]) ->
     Host = proplists:get_value(host, Args, <<"localhost">>),
     Port = proplists:get_value(port, Args, 5222),
@@ -183,6 +220,8 @@ init([Args, Owner]) ->
                 on_reply = OnReplyFun,
                 on_request = OnRequestFun}}.
 
+-spec handle_call(term(), {pid(), term()}, state()) ->
+    {reply, term(), state()} | {stop, normal, ok, state()}.
 handle_call(get_sm_h, _From, #state{sm_state = {_, H, _}} = State) ->
     {reply, H, State};
 handle_call({set_sm_h, H}, _From, #state{sm_state = {A, _OldH, S}} = State) ->
@@ -200,14 +239,14 @@ handle_call({upgrade_to_tls, SSLOpts}, _From, #state{socket = Socket} = State) -
         {error, closed} = E ->
             {reply, E, State}
     end;
-handle_call(use_zlib, _, #state{parser = Parser, socket = Socket} = State) ->
+handle_call(use_zlib, _, #state{parser = Parser} = State) ->
     Zin = zlib:open(),
     Zout = zlib:open(),
     ok = zlib:inflateInit(Zin),
     ok = zlib:deflateInit(Zout),
     {ok, NewParser} = exml_stream:reset_parser(Parser),
-    {reply, Socket, State#state{parser = NewParser,
-                                compress = {zlib, {Zin,Zout}}}};
+    {reply, ok, State#state{parser = NewParser,
+                            compress = {zlib, {Zin, Zout}}}};
 handle_call(get_active, _From, #state{active = Active} = State) ->
     {reply, Active, State};
 handle_call(get_compress, _From, #state{compress = Compress} = State) ->
@@ -233,7 +272,8 @@ handle_call(stop, _From, S) ->
     wait_until_closed(S#state.socket),
     {stop, normal, ok, S}.
 
--spec handle_cast({send, any()}, any()) -> {noreply, any()}.
+
+-spec handle_cast({send, any()}, any()) -> {noreply, state()} | {stop, term(), state()}.
 handle_cast({send, Elem}, #state{socket = Socket, ssl = Ssl, compress = Compress,
                                  on_request = OnRequestFun} = State) ->
     Reply = case {Ssl, Compress} of
@@ -256,6 +296,7 @@ handle_cast(reset_parser, #state{parser = Parser} = State) ->
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
+-spec handle_info(term(), state()) -> {noreply, state()} | {stop, term(), state()}.
 handle_info({tcp, Socket, Data}, State) ->
     inet:setopts(Socket, [{active, once}]),
     NewState = handle_data(Socket, Data, State),
@@ -269,13 +310,15 @@ handle_info({tcp_closed, Socket}, #state{socket = Socket} = State) ->
 handle_info(_, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{socket = Socket, ssl = true} = State) ->
-    common_terminate(_Reason, State),
+-spec terminate(term(), state()) -> term().
+terminate(Reason, #state{socket = Socket, ssl = true} = State) ->
+    common_terminate(Reason, State),
     ssl:close(Socket);
-terminate(_Reason, #state{socket = Socket} = State) ->
-    common_terminate(_Reason, State),
+terminate(Reason, #state{socket = Socket} = State) ->
+    common_terminate(Reason, State),
     gen_tcp:close(Socket).
 
+-spec code_change(term(), state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
@@ -437,17 +480,3 @@ maybe_ssl_connection(true, Address, Port, Opts, Args) ->
     ssl:connect(Address, Port, Opts ++ SSLOpts);
 maybe_ssl_connection(_, Address, Port, Opts, _) ->
     gen_tcp:connect(Address, Port, Opts).
-
-stream_start_req(Props) ->
-    {server, Server} = lists:keyfind(server, 1, Props),
-    NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
-    escalus_stanza:stream_start(Server, NS).
-
-stream_end_req(_) ->
-    escalus_stanza:stream_end().
-
-assert_stream_start(Rep = #xmlstreamstart{}, _) -> Rep;
-assert_stream_start(Rep, _) -> error("Not a valid stream start", [Rep]).
-
-assert_stream_end(Rep = #xmlstreamend{}, _) -> Rep;
-assert_stream_end(Rep, _) -> error("Not a valid stream end", [Rep]).

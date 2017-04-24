@@ -65,26 +65,33 @@ start(Config, UserSpec, Resource) ->
             {error, Error}
     end.
 
-start_for(Config, Username, Resource) ->
+-spec start_for(escalus:config(), escalus_users:user_spec(), binary()) -> {ok, _}
+                                                                        | {error, _}.
+start_for(Config, UserSpec, Resource) ->
     %% due to escalus_client:get_user_option hack,
     %% those two are equivalent now
-    start(Config, Username, Resource).
+    start(Config, UserSpec, Resource).
 
+-spec stop(escalus:config(), client()) -> ok.
 stop(Config, Client) ->
     escalus_connection:stop(Client),
     escalus_cleaner:remove_client(Config, Client).
 
+-spec kill_connection(escalus:config(), client()) -> ok.
 kill_connection(Config, Client) ->
     escalus_connection:kill(Client),
     escalus_cleaner:remove_client(Config, Client).
 
+-spec wait_for_close(escalus:config(), client(), non_neg_integer()) -> ok.
 wait_for_close(Config, Client, Timeout) ->
     true = escalus_connection:wait_for_close(Client, Timeout),
     escalus_cleaner:remove_client(Config, Client).
 
+-spec kill(client()) -> term().
 kill(#client{module = escalus_tcp, rcv_pid = Pid}) ->
     erlang:exit(Pid, kill).
 
+-spec peek_stanzas(client()) -> [exml:element()].
 peek_stanzas(#client{rcv_pid = Pid}) ->
     {messages, Msgs} = process_info(self(), messages),
     lists:flatmap(fun ({stanza, StanzaPid, Stanza}) when Pid == StanzaPid ->
@@ -94,12 +101,15 @@ peek_stanzas(#client{rcv_pid = Pid}) ->
                           []
                  end, Msgs).
 
+-spec has_stanzas(client()) -> boolean().
 has_stanzas(Client) ->
     peek_stanzas(Client) /= [].
 
+-spec wait_for_stanzas(client(), non_neg_integer()) -> [xmlel:element()].
 wait_for_stanzas(Client, Count) ->
     wait_for_stanzas(Client, Count, ?WAIT_FOR_STANZA_TIMEOUT).
 
+-spec wait_for_stanzas(client(), non_neg_integer(), non_neg_integer()) -> [xmlel:element()].
 wait_for_stanzas(Client, Count, Timeout) ->
     Tref = erlang:send_after(Timeout, self(), TimeoutMsg={timeout, make_ref()}),
     Result = do_wait_for_stanzas(Client, Count, TimeoutMsg, []),
@@ -120,9 +130,11 @@ do_wait_for_stanzas(#client{event_client=EventClient, jid=Jid, rcv_pid=Pid} = Cl
             do_wait_for_stanzas(Client, 0, TimeoutMsg, Acc)
     end.
 
+-spec wait_for_stanza(client()) -> exml:element().
 wait_for_stanza(Client) ->
     wait_for_stanza(Client, ?WAIT_FOR_STANZA_TIMEOUT).
 
+-spec wait_for_stanza(client(), non_neg_integer()) -> exml:element().
 wait_for_stanza(Client, Timeout) ->
     case wait_for_stanzas(Client, 1, Timeout) of
         [Stanza] ->
@@ -131,27 +143,34 @@ wait_for_stanza(Client, Timeout) ->
             error(timeout_when_waiting_for_stanza, [Client, Timeout])
     end.
 
+-spec send(client(), exml:element()) -> ok.
 send(Client, Packet) ->
     escalus_connection:send(Client, Packet).
 
+-spec send_and_wait(client(), exml:element()) -> exml:element().
 send_and_wait(Client, Packet) ->
     ok = send(Client, Packet),
     wait_for_stanza(Client).
 
+-spec is_client(term()) -> boolean().
 is_client(#client{}) ->
     true;
 is_client(_) ->
     false.
 
+-spec full_jid(client()) -> binary() | undefined.
 full_jid(#client{jid=Jid}) ->
     Jid.
 
+-spec short_jid(client()) -> binary().
 short_jid(Client) ->
     escalus_utils:regexp_get(full_jid(Client), <<"^([^/]*)">>).
 
+-spec username(client()) -> binary().
 username(Client) ->
     escalus_utils:regexp_get(full_jid(Client), <<"^([^@]*)">>).
 
+-spec server(client()) -> binary().
 server(Client) ->
     escalus_utils:regexp_get(full_jid(Client), <<"^[^@]*[@]([^/]*)">>).
 

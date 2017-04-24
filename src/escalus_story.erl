@@ -50,6 +50,7 @@ story(ConfigIn, ResourceCounts, Story) ->
         kill_client_connections(ConfigIn)
     end.
 
+-spec make_everyone_friends(escalus:config()) -> escalus:config().
 make_everyone_friends(Config) ->
     Users = escalus_config:get_config(escalus_users, Config),
     make_everyone_friends(Config, Users).

@@ -25,6 +25,8 @@
          is_connected/1,
          wait_for_close/2,
          kill/1,
+         use_zlib/1,
+         upgrade_to_tls/1,
          start_stream/1]).
 
 %% Behaviour helpers
@@ -46,7 +48,6 @@
 -export([connection_step/2]).
 
 -define(TIMEOUT, 1000).
--define(DEFAULT_RESOURCE, <<"escalus-default-resource">>).
 
 %%%===================================================================
 %%% Behaviour callback
@@ -63,7 +64,9 @@
 
 -callback is_connected(pid()) -> boolean().
 -callback reset_parser(pid()) -> ok.
--callback kill(pid()) -> any().
+-callback kill(pid()) -> ok | already_stopped.
+-callback use_zlib(pid()) -> ok.
+-callback upgrade_to_tls(pid(), proplists:proplist()) -> ok.
 -callback set_filter_predicate(pid(), filter_pred()) -> ok.
 
 
@@ -100,7 +103,7 @@ start(Props) ->
 %% to use a feature.
 %% Others will assume a feature is available and fail if it's not.
 -spec start(escalus_users:user_spec(),
-            [step_spec()]) -> {ok, client(), escalus_users:user_spec()} |
+            [step_spec()]) -> {ok, client(), escalus_session:features()} |
                               {error, any()}.
 start(Props, Steps) ->
     try
@@ -115,6 +118,8 @@ start(Props, Steps) ->
             {error, Error}
     end.
 
+-spec connection_step(step_spec(), {client(), escalus_session:features()}) ->
+                             {client(), escalus_session:features()}.
 connection_step(Step, {Client, Features}) ->
     try
         case Step of
@@ -148,6 +153,7 @@ connect(Props) ->
     Pid = Transport:connect(NewProps),
     maybe_set_jid(#client{module = Transport, rcv_pid = Pid, props = NewProps}).
 
+-spec maybe_set_jid(client()) -> client().
 maybe_set_jid(Client = #client{props = Props}) ->
     case {lists:keyfind(username, 1, Props),
           lists:keyfind(server, 1, Props),
@@ -193,13 +199,13 @@ get_stream_end(#client{rcv_pid = Pid, jid = Jid}, Timeout) ->
     end.
 
 
--spec get_sm_h(#client{}) -> non_neg_integer().
+-spec get_sm_h(client()) -> non_neg_integer().
 get_sm_h(#client{module = escalus_tcp, rcv_pid = Pid}) ->
     escalus_tcp:get_sm_h(Pid);
 get_sm_h(#client{module = Mod}) ->
     error({get_sm_h, {undefined_for_escalus_module, Mod}}).
 
--spec set_sm_h(#client{}, non_neg_integer()) -> non_neg_integer().
+-spec set_sm_h(client(), non_neg_integer()) -> {ok, non_neg_integer()}.
 set_sm_h(#client{module = escalus_tcp, rcv_pid = Pid}, H) ->
     escalus_tcp:set_sm_h(Pid, H);
 set_sm_h(#client{module = Mod}, _) ->
@@ -223,9 +229,18 @@ stop(#client{module = Mod, rcv_pid = Pid} = Client) ->
     Mod:stop(Pid).
 
 %% @doc Brutally kill the connection without terminating the XMPP stream.
--spec kill(client()) -> any().
+-spec kill(client()) -> ok | already_stopped.
 kill(#client{module = Mod, rcv_pid = Pid}) ->
     Mod:kill(Pid).
+
+-spec use_zlib(client()) -> ok.
+use_zlib(#client{module = Mod, rcv_pid = Pid}) ->
+    Mod:use_zlib(Pid).
+
+-spec upgrade_to_tls(client()) -> ok.
+upgrade_to_tls(#client{module = Mod, rcv_pid = Pid, props = Props}) ->
+    SSLOpts = proplists:get_value(ssl_opts, Props, []),
+    Mod:upgrade_to_tls(Pid, SSLOpts).
 
 %% @doc Waits at most MaxWait ms for the client to be closed.
 %% Returns true if the client was disconnected, otherwise false.
@@ -288,6 +303,7 @@ default_connection_steps() ->
      maybe_stream_management,
      maybe_use_carbons].
 
+-spec start_stream(client()) -> exml_stream:element().
 start_stream(#client{module = Mod, props = Props} = Client) ->
     StreamStartReq = Mod:stream_start_req(Props),
     send(Client, StreamStartReq),
@@ -295,6 +311,7 @@ start_stream(#client{module = Mod, props = Props} = Client) ->
     StreamStartRep = get_stanza(Client, stream_start, Timeout),
     Mod:assert_stream_start(StreamStartRep, Props).
 
+-spec end_stream(client()) -> exml_stream:element().
 end_stream(#client{module = Mod, props = Props} = Client) ->
     StreamEndReq = Mod:stream_end_req(Props),
     send(Client, StreamEndReq),

@@ -64,13 +64,16 @@ start_stream(Client = #client{props = Props}) ->
 
 -spec starttls(client()) -> client().
 starttls(Client) ->
-    escalus_tcp:upgrade_to_tls(Client).
+    escalus_connection:send(Client, escalus_stanza:starttls()),
+    escalus_connection:get_stanza(Client, proceed),
+    escalus_connection:upgrade_to_tls(Client),
+    start_stream(Client).
 
 -spec authenticate(client()) -> client().
 authenticate(Client = #client{props = Props}) ->
     %% FIXME: as default, select authentication scheme based on stream features
     {M, F} = proplists:get_value(auth, Props, {escalus_auth, auth_plain}),
-    PropsAfterAuth = case M:F(Client, Props) of
+    PropsAfterAuth = case apply(M, F, [Client, Props]) of
                          ok -> Props;
                          {ok, P} when is_list(P) -> P
                      end,
@@ -107,9 +110,15 @@ compress(Client = #client{props = Props}) ->
         false ->
             Client;
         <<"zlib">> ->
-            escalus_tcp:use_zlib(Client)
-        %% TODO: someday maybe lzw too
+            use_zlib(Client)
     end.
+
+use_zlib(Client) ->
+    escalus_connection:send(Client, escalus_stanza:compress(<<"zlib">>)),
+    Compressed = escalus_connection:get_stanza(Client, compressed),
+    escalus:assert(is_compressed, Compressed),
+    escalus_connection:use_zlib(Client),
+    start_stream(Client).
 
 -spec session(client()) -> client().
 session(Client) ->

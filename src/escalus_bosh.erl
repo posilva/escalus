@@ -16,7 +16,7 @@
 -export([connect/1,
          send/2,
          is_connected/1,
-         upgrade_to_tls/1,
+         upgrade_to_tls/2,
          use_zlib/1,
          reset_parser/1,
          stop/1,
@@ -106,6 +106,7 @@ is_connected(Pid) ->
 reset_parser(Pid) ->
     gen_server:cast(Pid, reset_parser).
 
+-spec stop(pid()) -> ok | already_stopped.
 stop(Pid) ->
     try
         gen_server:call(Pid, stop)
@@ -119,7 +120,7 @@ stop(Pid) ->
                    process_info(Pid, messages), catch sys:get_state(Pid)})
     end.
 
--spec kill(pid()) -> ok.
+-spec kill(pid()) -> ok | already_stopped.
 kill(Pid) ->
     try
         mark_as_terminated(Pid),
@@ -131,17 +132,35 @@ kill(Pid) ->
             already_stopped
     end.
 
--spec upgrade_to_tls(pid()) -> not_supported.
-upgrade_to_tls(_Pid) ->
+-spec upgrade_to_tls(_, _) -> no_return().
+upgrade_to_tls(_, _) ->
     error(not_supported).
 
--spec use_zlib(pid()) -> not_supported.
+-spec use_zlib(pid()) -> no_return().
 use_zlib(_Pid) ->
     error(not_supported).
 
 -spec set_filter_predicate(pid(), escalus_connection:filter_pred()) -> ok.
 set_filter_predicate(Pid, Pred) ->
     gen_server:call(Pid, {set_filter_pred, Pred}).
+
+-spec stream_start_req(escalus_users:user_spec()) -> exml_stream:element().
+stream_start_req(Props) ->
+    {server, Server} = lists:keyfind(server, 1, Props),
+    NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
+    escalus_stanza:stream_start(Server, NS).
+
+-spec stream_end_req(_) -> exml_stream:element().
+stream_end_req(_) ->
+    escalus_stanza:stream_end().
+
+-spec assert_stream_start(exml_stream:element(), _) -> exml_stream:element().
+assert_stream_start(Rep = #xmlstreamstart{}, _) -> Rep;
+assert_stream_start(Rep, _) -> error("Not a valid stream start", [Rep]).
+
+-spec assert_stream_end(exml_stream:element(), _) -> exml_stream:element().
+assert_stream_end(Rep = #xmlstreamend{}, _) -> Rep;
+assert_stream_end(Rep, _) -> error("Not a valid stream end", [Rep]).
 
 %%%===================================================================
 %%% BOSH XML elements
@@ -333,42 +352,32 @@ init([Args, Owner]) ->
     | {stop, normal, ok, state()}.
 handle_call(get_sid, _From, #state{sid = Sid} = State) ->
     {reply, Sid, State};
-
 handle_call(get_rid, _From, #state{rid = Rid} = State) ->
     {reply, Rid, State};
-
 handle_call(get_keepalive, _From, #state{keepalive = Keepalive} = State) ->
     {reply, Keepalive, State};
 handle_call({set_keepalive, NewKeepalive}, _From,
             #state{keepalive = Keepalive} = State) ->
     {reply, {ok, Keepalive, NewKeepalive},
      State#state{keepalive = NewKeepalive}};
-
 handle_call(mark_as_terminated, _From, #state{} = State) ->
     {reply, {ok, marked_as_terminated}, State#state{terminated = true}};
-
 handle_call(get_active, _From, #state{active = Active} = State) ->
     {reply, Active, State};
 handle_call({set_active, Active}, _From, State) ->
     {reply, ok, State#state{active = Active}};
-
 handle_call({send, Elem}, _From, State) ->
     NewState = send_elem(Elem, State),
     {reply, ok, NewState};
-
 handle_call(recv, _From, State) ->
     {Reply, NS} = handle_recv(State),
     {reply, Reply, NS};
-
 handle_call(get_requests, _From, State) ->
     {reply, queue:len(State#state.requests) + queue:len(State#state.pending_requests), State};
-
 handle_call({set_filter_pred, Pred}, _From, State) ->
     {reply, ok, State#state{filter_pred = Pred}};
-
 handle_call({set_quickfail, QuickfailFlag}, _From, State) ->
     {reply, ok, State#state{quickfail = QuickfailFlag}};
-
 handle_call(stop, _From, #state{ terminated = true } = State) ->
     {stop, normal, ok, State};
 handle_call(stop, From, #state{ waiting_requesters = WaitingRequesters } = State) ->
@@ -380,24 +389,19 @@ handle_call(stop, From, #state{ waiting_requesters = WaitingRequesters } = State
 -spec handle_cast(term(), state()) -> {noreply, state()} | {stop, normal, state()}.
 handle_cast(stop, State) ->
     {stop, normal, State};
-
 handle_cast({send_raw, Body}, State) ->
     NewState = send_data(Body, State),
     {noreply, NewState};
-
 handle_cast({resend_raw, Body}, State) ->
     NewState = send_data(Body, make_ref(), State#state.rid, State),
     {noreply, NewState};
-
 handle_cast({pause, Seconds},
             #state{rid = Rid, sid = Sid} = State) ->
     NewState = send_data(pause_body(Rid, Sid, Seconds), State),
     {noreply, NewState};
-
 handle_cast(reset_parser, #state{parser = Parser} = State) ->
     {ok, NewParser} = exml_stream:reset_parser(Parser),
     {noreply, State#state{parser = NewParser}}.
-
 
 %% Handle async HTTP request replies.
 -spec handle_info(term(), state()) -> {noreply, state()}.
@@ -424,7 +428,7 @@ handle_info({http_reply, Ref, Body} = HttpReply,
 handle_info(_, State) ->
     {noreply, State}.
 
--spec terminate(term(), state()) -> any().
+-spec terminate(term(), state()) -> term().
 terminate(_Reason, #state{client = Client, parser = Parser}) ->
     fusco_cp:stop(Client),
     exml_stream:free_parser(Parser).
@@ -601,20 +605,6 @@ host_to_list({_, _, _, _} = IP4) -> inet_parse:ntoa(IP4);
 host_to_list({_, _, _, _, _, _, _, _} = IP6) -> inet_parse:ntoa(IP6);
 host_to_list(BHost) when is_binary(BHost) -> binary_to_list(BHost);
 host_to_list(Host) when is_list(Host) -> Host.
-
-stream_start_req(Props) ->
-    {server, Server} = lists:keyfind(server, 1, Props),
-    NS = proplists:get_value(stream_ns, Props, <<"jabber:client">>),
-    escalus_stanza:stream_start(Server, NS).
-
-stream_end_req(_) ->
-    escalus_stanza:stream_end().
-
-assert_stream_start(Rep = #xmlstreamstart{}, _) -> Rep;
-assert_stream_start(Rep, _) -> error("Not a valid stream start", [Rep]).
-
-assert_stream_end(Rep = #xmlstreamend{}, _) -> Rep;
-assert_stream_end(Rep, _) -> error("Not a valid stream end", [Rep]).
 
 queue_insert_by_rid({_Ref, ReqRid, _} = Req, Queue) ->
     case queue:out(Queue) of
