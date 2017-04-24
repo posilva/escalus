@@ -14,6 +14,7 @@
 
 %% Low-level API
 -export([connect/1,
+         maybe_set_jid/1,
          send/2,
          get_stanza/2,
          get_stanza/3,

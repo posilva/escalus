@@ -99,7 +99,7 @@ bind(Client = #client{props = Props}) ->
                    _ ->
                        PropsWithResource
                end,
-    Client#client{props = NewProps}.
+    escalus_connection:maybe_set_jid(Client#client{props = NewProps}).
 
 -spec compress(client()) -> client().
 compress(Client = #client{props = Props}) ->
